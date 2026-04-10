@@ -89,10 +89,12 @@ def transcribe_vosk(audio) -> str:
     if isinstance(audio, np.ndarray):
         audio_data = audio.tobytes()
     else:
-        # Load from file
-        import wave
+        # Convert to WAV if not already
+        from outloud.utils import convert_to_wav
         audio_path = audio if isinstance(audio, str) else str(audio)
-        wf = wave.open(audio_path, "rb")
+        wav_path = convert_to_wav(audio_path)
+        import wave
+        wf = wave.open(wav_path, "rb")
         audio_data = wf.readframes(wf.getnframes())
         wf.close()
 
