@@ -1,4 +1,4 @@
-"""Qwen 0.8B 4-bit via MLX — summarization and grammar correction."""
+"""LLMPipeline — unified MLX inference for multiple models."""
 
 import gc
 import re
@@ -7,39 +7,56 @@ import mlx.core as mx
 from mlx_lm import load, generate
 from mlx_lm.generate import make_sampler
 
+from outloud.config import LOCAL_LLM_MODELS
 from outloud.logger import get_logger
 
-log = get_logger("qwen")
-
-MODEL_NAME = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
-MODEL_SIZE_MB = 500  # 4-bit quantized
+log = get_logger("llm")
 
 
-class QwenPipeline:
-    """Qwen 0.8B 4-bit via MLX — native for Apple Silicon."""
+class LLMPipeline:
+    """Unified MLX pipeline for any 4-bit model."""
 
-    def __init__(self):
+    def __init__(self, model_key: str):
+        self.model_key = model_key
         self._model = None
         self._tokenizer = None
+
+    @property
+    def model_info(self) -> dict:
+        """Get model configuration."""
+        info = LOCAL_LLM_MODELS.get(self.model_key)
+        if not info:
+            raise ValueError(f"Unknown model: {self.model_key}")
+        return info
+
+    # ─── Loading ─────────────────────────────────────────────────────────
 
     def _load(self):
         """Lazy load model."""
         if self._model is not None:
             return
 
-        log.info("Loading %s (4-bit MLX)", MODEL_NAME)
-        self._model, self._tokenizer = load(MODEL_NAME)
-        log.info("Qwen loaded (~%dMB 4-bit)", MODEL_SIZE_MB)
+        mlx_name = self.model_info["mlx_name"]
+        log.info("Loading %s (4-bit MLX)", mlx_name)
+        self._model, self._tokenizer = load(mlx_name)
+        log.info("%s loaded (%s)", self.model_key, self.model_info["size"])
 
-    def _run(self, messages: list[dict], max_tokens: int = 512) -> str:
+    # ─── Generation ──────────────────────────────────────────────────────
+
+    def _run(self, messages: list[dict], max_tokens: int = 512,
+             temp: float = 0.3, top_p: float = 0.9) -> str:
         """Run generation."""
         self._load()
 
         prompt = self._tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True,
-            enable_thinking=False)
+            messages, add_generation_prompt=True)
 
-        sampler = make_sampler(temp=0.3, top_p=0.9)
+        # Disable thinking for reasoning models
+        kwargs = {}
+        if "reasoning" in self.model_key.lower():
+            kwargs["enable_thinking"] = False
+
+        sampler = make_sampler(temp=temp, top_p=top_p)
 
         response = generate(
             self._model,
@@ -50,10 +67,9 @@ class QwenPipeline:
             verbose=False,
         )
 
-        mx.clear_cache()
-        gc.collect()
-
         return response.strip()
+
+    # ─── Tasks ───────────────────────────────────────────────────────────
 
     def summarize(self, text: str) -> str:
         """Summarize text."""
@@ -64,15 +80,16 @@ class QwenPipeline:
         if len(words) < 20:
             return text
 
-        log.info("Qwen summarizing: %d words", len(words))
+        log.info("%s summarizing: %d words", self.model_key, len(words))
 
-        if len(text) > 6000:
+        # Truncate if too long for small models
+        max_chars = 6000
+        if len(text) > max_chars:
             return self._summarize_long(text)
 
         messages = [
             {"role": "system", "content": (
-                "You help summarize text. "
-                "Highlight the main idea in 2-4 sentences. "
+                "Briefly summarize the text. 2-4 sentences. "
                 "Write only the result, no filler words."
             )},
             {"role": "user", "content": f"Summarize briefly:\n\n{text}"}
@@ -126,7 +143,7 @@ class QwenPipeline:
         if not text.strip():
             return text
 
-        log.info("Qwen grammar correction: %d chars", len(text))
+        log.info("%s grammar correction: %d chars", self.model_key, len(text))
 
         sentences = re.split(r'(?<=[.!?])\s+', text)
 
@@ -155,9 +172,9 @@ class QwenPipeline:
             corrected.append(c)
 
         result = ' '.join(corrected)
-        mx.clear_cache()
-        gc.collect()
         return result
+
+    # ─── Cleanup ─────────────────────────────────────────────────────────
 
     def cleanup(self):
         """Free memory."""
@@ -169,39 +186,3 @@ class QwenPipeline:
             self._tokenizer = None
         mx.clear_cache()
         gc.collect()
-
-
-_pipeline = None
-
-
-def get_pipeline() -> QwenPipeline:
-    """Get singleton pipeline."""
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = QwenPipeline()
-    return _pipeline
-
-
-def check_qwen_model() -> bool:
-    """Check if model is downloaded."""
-    try:
-        import mlx.core as mx
-        from mlx_lm import load
-        model, tok = load(MODEL_NAME)
-        del model, tok
-        mx.clear_cache()
-        return True
-    except Exception:
-        return False
-
-
-def download_qwen_model():
-    """Download the model."""
-    log.info("Downloading %s", MODEL_NAME)
-    print(f"Downloading Qwen 4-bit ({MODEL_SIZE_MB}MB)...")
-    model, tok = load(MODEL_NAME)
-    del model, tok
-    mx.clear_cache()
-    gc.collect()
-    log.info("Qwen downloaded")
-    print("Qwen model ready")

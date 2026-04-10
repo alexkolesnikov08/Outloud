@@ -1,4 +1,4 @@
-"""OutLoud Cloud — Groq + fallback to local models."""
+"""OutLoud Cloud — Groq API with timeouts and fallback."""
 
 import json
 import os
@@ -6,30 +6,30 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError, APIStatusError
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
+from outloud.config import (
+    CLOUD_WHISPER_MODEL,
+    CLOUD_SUMMARY_MODELS,
+    CLOUD_GRAMMAR_MODELS,
+    API_TIMEOUT,
+    RATE_LIMIT_RETRY_DELAY,
+)
 from outloud.logger import get_logger
+from outloud.exceptions import (
+    RateLimitError,
+    QuotaExceededError,
+    NetworkError,
+    APIKeyError,
+)
 
 log = get_logger("cloud")
 
 KEYS_FILE = Path.home() / ".outloud" / "api_keys.json"
 
-# Models — Groq
-WHISPER_MODEL = "whisper-large-v3-turbo"
-# Fallback chain for summarization
-SUMMARY_MODELS = [
-    "openai/gpt-oss-20b",
-    "qwen/qwen3-32b",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-]
-# Fallback chain for grammar
-GRAMMAR_MODELS = [
-    "llama-3.1-8b-instant",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-]
 
+# ─── Key Management ───────────────────────────────────────────────────────
 
 def _ensure_keys_dir():
     """Ensure the keys directory exists."""
@@ -46,6 +46,7 @@ def save_api_keys(groq_key: str):
     with open(KEYS_FILE, "w") as f:
         json.dump(data, f, indent=2)
     os.chmod(KEYS_FILE, 0o600)
+    log.info("API keys saved")
 
 
 def load_api_keys() -> Optional[dict]:
@@ -62,43 +63,83 @@ def check_keys() -> bool:
 
 
 def _get_client() -> OpenAI:
-    """Get Groq OpenAI client."""
+    """Get Groq OpenAI client with timeout."""
     keys = load_api_keys()
     if not keys:
-        raise RuntimeError("API keys not configured. Run: outloud cloud-setup")
+        raise APIKeyError("Groq")
     return OpenAI(
         api_key=keys["groq_api_key"],
-        base_url="https://api.groq.com/openai/v1"
+        base_url="https://api.groq.com/openai/v1",
+        timeout=API_TIMEOUT,
     )
 
 
-def _is_rate_limit(err) -> bool:
-    """Check if the error is a rate limit."""
-    msg = str(err).lower()
-    return any(k in msg for k in [
-        "rate_limit", "quota", "limit", "rate limit",
-        "insufficient_quota", "too_many", "429"
-    ])
+# ─── Error Classification ─────────────────────────────────────────────────
 
+def _classify_error(err: Exception) -> Exception:
+    """Classify an API error into a specific exception type."""
+    msg = str(err).lower()
+
+    if isinstance(err, APITimeoutError):
+        return NetworkError("Groq", "request timed out")
+
+    if isinstance(err, APIStatusError):
+        status = getattr(err, "status_code", 0)
+        if status == 429:
+            return RateLimitError("Groq", RATE_LIMIT_RETRY_DELAY)
+        if status == 401:
+            return APIKeyError("Groq")
+        if status in (500, 502, 503):
+            return NetworkError("Groq", f"server error {status}")
+
+    if any(k in msg for k in ["rate_limit", "too_many", "429"]):
+        return RateLimitError("Groq", RATE_LIMIT_RETRY_DELAY)
+    if any(k in msg for k in ["quota", "insufficient_quota"]):
+        return QuotaExceededError("Groq")
+    if any(k in msg for k in ["timeout", "timed out"]):
+        return NetworkError("Groq", "request timed out")
+
+    return err
+
+
+# ─── Chat with Fallback ───────────────────────────────────────────────────
 
 def _chat_with_fallback(client: OpenAI, model_list: list[str],
                         messages: list[dict], **kwargs) -> str:
     """Try models in order, move to next on rate limits."""
+    last_error = None
+
     for model in model_list:
         try:
+            log.info("Trying cloud model: %s", model)
             resp = client.chat.completions.create(
-                model=model, messages=messages, **kwargs)
+                model=model, messages=messages,
+                timeout=API_TIMEOUT, **kwargs)
             return resp.choices[0].message.content.strip()
-        except Exception as e:
-            if _is_rate_limit(e):
-                log.warning("Rate limit on %s, trying next", model)
-                continue
-            raise
 
-    # All Groq models exhausted
-    print("⚠ Groq limits reached — falling back to local models")
+        except Exception as e:
+            classified = _classify_error(e)
+            last_error = classified
+
+            if isinstance(classified, RateLimitError):
+                log.warning("Rate limit on %s, trying next model", model)
+                time.sleep(RATE_LIMIT_RETRY_DELAY)
+                continue
+            if isinstance(classified, QuotaExceededError):
+                log.error("Quota exceeded — trying next model")
+                continue
+            if isinstance(classified, APIKeyError):
+                raise classified
+            # Other errors — try next model
+            log.warning("Model %s failed: %s", model, classified)
+            continue
+
+    # All cloud models exhausted
+    log.error("All cloud models failed: %s", last_error)
     return ""
 
+
+# ─── Chunked Transcription ────────────────────────────────────────────────
 
 def _transcribe_chunks(client: OpenAI, audio_path: str) -> str:
     """Transcribe large audio file in chunks."""
@@ -106,10 +147,11 @@ def _transcribe_chunks(client: OpenAI, audio_path: str) -> str:
     import tempfile
 
     audio = AudioSegment.from_mp3(audio_path)
-    chunk_ms = 300_000  # 5 min — mp3 will be ~5MB
+    chunk_ms = 300_000  # 5 min
     total_chunks = max(1, len(audio) // chunk_ms + (1 if len(audio) % chunk_ms else 0))
 
-    print(f"File is large — splitting into {total_chunks} chunks")
+    log.info("Splitting large file into %d chunks", total_chunks)
+    print(f"Large file — splitting into {total_chunks} chunks")
 
     parts = []
     for i in range(0, len(audio), chunk_ms):
@@ -118,42 +160,48 @@ def _transcribe_chunks(client: OpenAI, audio_path: str) -> str:
 
         with Progress(
             SpinnerColumn(),
-            TextColumn(f"[white]transcribing chunk {chunk_num}/{total_chunks}"),
+            TextColumn(f"[white]chunk {chunk_num}/{total_chunks}"),
             BarColumn(bar_width=30),
             TimeElapsedColumn(),
             transient=True,
         ) as prog:
             prog.add_task("work", total=None)
 
-            # Export as mp3 to save space
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
                 chunk.export(tmp.name, format="mp3", bitrate="64k")
-                with open(tmp.name, "rb") as f:
-                    result = client.audio.transcriptions.create(
-                        model=WHISPER_MODEL,
-                        file=f,
-                        response_format="text",
-                        language="ru",
-                    )
-                os.unlink(tmp.name)
+                try:
+                    with open(tmp.name, "rb") as f:
+                        result = client.audio.transcriptions.create(
+                            model=CLOUD_WHISPER_MODEL,
+                            file=f,
+                            response_format="text",
+                            language="ru",
+                        )
+                finally:
+                    os.unlink(tmp.name)
 
             text = result.strip() if isinstance(result, str) else result.text.strip()
             parts.append(text)
 
     full_text = " ".join(parts)
-    log.info("Cloud transcription (chunked) done: %d words", len(full_text.split()))
+    log.info("Chunked transcription done: %d words", len(full_text.split()))
     return full_text
 
 
+# ─── Public API ───────────────────────────────────────────────────────────
+
 def transcribe_cloud(audio_path: str) -> str:
-    """Transcription: Whisper Large v3 Turbo. Fallback -> local Vosk."""
+    """Transcription: Whisper Large v3 Turbo.
+
+    Automatically chunks files > 20MB.
+    """
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio not found: {audio_path}")
 
     log.info("Cloud transcription: %s", audio_path)
     client = _get_client()
 
-    # Check size — chunk if > 20MB
+    # Check size
     file_size = os.path.getsize(audio_path)
     is_large = file_size > 20 * 1024 * 1024
 
@@ -171,7 +219,7 @@ def transcribe_cloud(audio_path: str) -> str:
             prog.add_task("work", total=None)
             with open(audio_path, "rb") as f:
                 result = client.audio.transcriptions.create(
-                    model=WHISPER_MODEL,
+                    model=CLOUD_WHISPER_MODEL,
                     file=f,
                     response_format="text",
                     language="ru",
@@ -182,21 +230,14 @@ def transcribe_cloud(audio_path: str) -> str:
         return text
 
     except Exception as e:
-        if "blocked" in str(e).lower() or "permission" in str(e).lower():
-            log.warning("Whisper blocked, fallback to local Vosk")
-            from outloud.transcriber import transcribe_vosk
-            return transcribe_vosk(audio_path)
-        if _is_rate_limit(e):
-            print("⚠ Groq limits — transcribing locally")
-            from outloud.transcriber import transcribe_vosk
-            return transcribe_vosk(audio_path)
+        classified = _classify_error(e)
         if "413" in str(e) or "too large" in str(e).lower():
             return _transcribe_chunks(client, audio_path)
-        raise
+        raise classified
 
 
 def summarize_cloud(text: str) -> str:
-    """Summarization: GPT-OSS 20B -> Qwen 32B -> Llama 70B -> Llama 8B."""
+    """Summarization: GPT-OSS 20B → Qwen 32B → Llama 70B → Llama 8B."""
     if not text.strip():
         return ""
     words = text.split()
@@ -216,27 +257,28 @@ def summarize_cloud(text: str) -> str:
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("[white]summarizing (gpt-oss-20b)"),
+        TextColumn("[white]summarizing (cloud)"),
         BarColumn(bar_width=30),
         TimeElapsedColumn(),
         transient=True,
     ) as prog:
         prog.add_task("work", total=None)
         result = _chat_with_fallback(
-            client, SUMMARY_MODELS, messages,
+            client, CLOUD_SUMMARY_MODELS, messages,
             temperature=0.3, top_p=0.9, max_tokens=512)
 
     if result:
         log.info("Cloud summary done: %d words", len(result.split()))
         return result
 
-    # Fallback to local model
-    from outloud.summarizer import summarize_text
-    return summarize_text(text, engine="qwen")
+    log.warning("All cloud summary models failed, falling back to local")
+    print("Cloud unavailable — using local extractive summary")
+    from outloud.summarizer import summarize_extractive
+    return summarize_extractive(text)
 
 
 def correct_grammar_cloud(text: str) -> str:
-    """Grammar: Llama 3.1 8B -> Llama 4 Scout."""
+    """Grammar: Llama 3.1 8B → Llama 4 Scout."""
     if not text.strip():
         return text
 
@@ -254,26 +296,23 @@ def correct_grammar_cloud(text: str) -> str:
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("[white]correcting grammar (llama-3.1-8b)"),
+        TextColumn("[white]correcting grammar (cloud)"),
         BarColumn(bar_width=30),
         TimeElapsedColumn(),
         transient=True,
     ) as prog:
         prog.add_task("work", total=None)
         result = _chat_with_fallback(
-            client, GRAMMAR_MODELS, messages,
+            client, CLOUD_GRAMMAR_MODELS, messages,
             temperature=0.2, top_p=0.9, max_tokens=len(text.split()) * 2)
 
     if result:
         log.info("Cloud grammar done: %d chars", len(result))
         return result
 
-    # Fallback to local model
-    from outloud.qwen_llm import get_pipeline
-    qwen = get_pipeline()
-    fixed = qwen.correct_grammar(text)
-    qwen.cleanup()
-    return fixed
+    log.warning("All cloud grammar models failed")
+    print("Cloud unavailable — returning original text")
+    return text
 
 
 def verify_keys() -> bool:

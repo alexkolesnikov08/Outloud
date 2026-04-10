@@ -1,4 +1,4 @@
-"""Text summarization — extractive or Qwen."""
+"""Text summarization — extractive fallback."""
 
 import gc
 import re
@@ -21,9 +21,24 @@ STOP_WORDS = {
     'ну', 'вообще', 'потом', 'ещё', 'уже', 'даже', 'сам', 'себя',
     'меня', 'мне', 'мной', 'нас', 'нам', 'этом', 'этот',
     'тот', 'та', 'те', 'тех', 'тем', 'теми',
+    # English stop words
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+    'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
+    'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above',
+    'below', 'between', 'out', 'off', 'over', 'under', 'again', 'further',
+    'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all',
+    'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor',
+    'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just',
+    'because', 'but', 'and', 'or', 'if', 'while', 'about', 'against',
+    'this', 'that', 'these', 'those', 'i', 'me', 'my', 'myself', 'we',
+    'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself',
+    'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself',
+    'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
+    'what', 'which', 'who', 'whom',
 }
 
-SENTENCES_PER_BATCH = 50
 TARGET_SUMMARY_RATIO = 0.15
 
 
@@ -46,7 +61,10 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def summarize_extractive(text: str) -> str:
-    """Extractive summarization — fast, no ML."""
+    """Extractive summarization — fast, no ML.
+
+    Works for both Russian and English text.
+    """
     if not text.strip():
         return ""
 
@@ -98,36 +116,3 @@ def summarize_extractive(text: str) -> str:
     gc.collect()
     log.info("Extractive summary: %d -> %d sentences", len(sentences), len(top))
     return summary
-
-
-def summarize_qwen(text: str) -> str:
-    """Summarization via Qwen 0.8B 4-bit."""
-    from outloud.qwen_llm import get_pipeline
-    pipeline = get_pipeline()
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[white]{task.description}"),
-        BarColumn(bar_width=30),
-        TextColumn("[white]{task.percentage:.0f}%"),
-        TimeElapsedColumn(),
-        transient=True,
-    ) as prog:
-        task = prog.add_task("summarizing (qwen)", total=None)
-        result = pipeline.summarize(text)
-
-    gc.collect()
-    return result
-
-
-def summarize_text(text: str, engine: str = "extractive") -> str:
-    """
-    Summarize text.
-
-    Args:
-        text: Input text
-        engine: "extractive" (fast) or "qwen" (quality)
-    """
-    if engine == "qwen":
-        return summarize_qwen(text)
-    return summarize_extractive(text)
