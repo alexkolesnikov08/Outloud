@@ -52,8 +52,8 @@ LOCAL_LLM_MODELS = {
         "task": "summary",
     },
     # Alternative summarization
-    "gemma2-1b": {
-        "mlx_name": "mlx-community/gemma-2-1b-it-4bit",
+    "gemma3-1b": {
+        "mlx_name": "mlx-community/gemma-3-1b-it-4bit",
         "size": "800MB",
         "langs": ["ru", "en"],
         "task": "summary",
@@ -99,7 +99,7 @@ LANG_TO_VOSK = {
 
 LANG_TO_LLM = {
     "en": ["lmf2.5-350m", "qwen3-0.6b"],
-    "ru": ["qwen3-0.6b", "gemma2-1b"],
+    "ru": ["qwen3-0.6b", "gemma3-1b"],
 }
 
 # ─── Recording settings ─────────────────────────────────────────────────────

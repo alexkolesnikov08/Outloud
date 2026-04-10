@@ -208,7 +208,7 @@ def record(cloud: bool, grammar: bool, lang: str = None, model: str = None):
     # Transcription
     try:
         text = router.transcribe(str(sess / "audio.wav"))
-        _save("transcription.txt", text, sess)
+        _save("transcription.md", text, sess)
         print("Transcription done")
     except Exception as e:
         print(f"Transcription failed: {e}")
@@ -224,27 +224,26 @@ def record(cloud: bool, grammar: bool, lang: str = None, model: str = None):
     # Summarization
     try:
         summary = router.summarize(text)
-        _save("summary.txt", summary, sess)
+        _save("summary.md", summary, sess)
         print("Summary done")
     except Exception as e:
         print(f"Summarization failed: {e}")
         summary = text
 
-    # Grammar
+    # Grammar — apply to transcription, not summary
     if grammar:
         try:
-            fixed = router.correct_grammar(summary)
-            _save("corrected.txt", fixed, sess)
-            final = fixed
+            fixed = router.correct_grammar(text)
+            _save("corrected.md", fixed, sess)
             print("Grammar done")
         except Exception as e:
             print(f"Grammar failed: {e}")
-            final = summary
+            fixed = text
     else:
-        final = summary
+        fixed = None
 
     router.cleanup()
-    _stats(start, text, final, sess)
+    _stats(start, text, summary, sess)
 
 
 # ─── file ───────────────────────────────────────────────────────────────────
@@ -272,7 +271,7 @@ def transcribe_file(filepath: str, cloud: bool, grammar: bool, lang: str = None)
     # Transcription
     try:
         text = router.transcribe(filepath)
-        _save("transcription.txt", text, sess)
+        _save("transcription.md", text, sess)
         print("Transcription done")
     except Exception as e:
         print(f"Transcription failed: {e}")
@@ -287,7 +286,7 @@ def transcribe_file(filepath: str, cloud: bool, grammar: bool, lang: str = None)
     # Summarization
     try:
         summary = router.summarize(text)
-        _save("summary.txt", summary, sess)
+        _save("summary.md", summary, sess)
         print("Summary done")
     except Exception as e:
         print(f"Summarization failed: {e}")
@@ -295,18 +294,17 @@ def transcribe_file(filepath: str, cloud: bool, grammar: bool, lang: str = None)
 
     if grammar:
         try:
-            fixed = router.correct_grammar(summary)
-            _save("corrected.txt", fixed, sess)
-            final = fixed
+            fixed = router.correct_grammar(text)
+            _save("corrected.md", fixed, sess)
             print("Grammar done")
         except Exception as e:
             print(f"Grammar failed: {e}")
-            final = summary
+        final = summary
     else:
         final = summary
 
     router.cleanup()
-    _stats(start, text, final, sess)
+    _stats(start, text, summary, sess)
 
 
 # ─── url ────────────────────────────────────────────────────────────────────
@@ -343,7 +341,7 @@ def process_url(url: str, cloud: bool, grammar: bool, lang: str = None):
     # Transcription
     try:
         text = router.transcribe(audio_path)
-        _save("transcription.txt", text, sess)
+        _save("transcription.md", text, sess)
         print("Transcription done")
     except Exception as e:
         print(f"Transcription failed: {e}")
@@ -358,7 +356,7 @@ def process_url(url: str, cloud: bool, grammar: bool, lang: str = None):
     # Summarization
     try:
         summary = router.summarize(text)
-        _save("summary.txt", summary, sess)
+        _save("summary.md", summary, sess)
         print("Summary done")
     except Exception as e:
         print(f"Summarization failed: {e}")
@@ -366,9 +364,8 @@ def process_url(url: str, cloud: bool, grammar: bool, lang: str = None):
 
     if grammar:
         try:
-            fixed = router.correct_grammar(summary)
-            _save("corrected.txt", fixed, sess)
-            final = fixed
+            fixed = router.correct_grammar(text)
+            _save("corrected.md", fixed, sess)
             print("Grammar done")
         except Exception as e:
             print(f"Grammar failed: {e}")
@@ -377,7 +374,7 @@ def process_url(url: str, cloud: bool, grammar: bool, lang: str = None):
         final = summary
 
     router.cleanup()
-    _stats(start, text, final, sess)
+    _stats(start, text, summary, sess)
 
 
 # ─── cloud-setup ────────────────────────────────────────────────────────────

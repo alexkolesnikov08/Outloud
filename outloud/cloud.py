@@ -249,10 +249,19 @@ def summarize_cloud(text: str) -> str:
 
     messages = [
         {"role": "system", "content": (
-            "Briefly summarize the text. 2-4 sentences. "
-            "Only the result, no filler words."
+            "You are a student's study assistant. Convert the text into lecture notes.\n"
+            "Format (markdown):\n"
+            "## 📝 Study Notes\n\n"
+            "**Text:** brief overview\n\n"
+            "> **Main idea:** one sentence\n\n"
+            "**Key points:**\n"
+            "- Point 1\n"
+            "- Point 2\n"
+            "- Point 3\n\n"
+            "> **Takeaway:** one sentence\n\n"
+            "Rules: facts only, no filler, same language as source."
         )},
-        {"role": "user", "content": f"Summarize briefly:\n\n{text}"}
+        {"role": "user", "content": f"Create study notes:\n\n{text}"}
     ]
 
     with Progress(

@@ -162,11 +162,12 @@ class ProviderRouter:
 
     def _get_local_pipeline(self, model_key: str):
         """Get or create local MLX pipeline for the given model."""
-        if self._local_pipeline is not None:
+        if self._local_pipeline is not None and self._local_pipeline.model_key == model_key:
             return self._local_pipeline
 
         from outloud.llm_pipeline import LLMPipeline
         self._local_pipeline = LLMPipeline(model_key)
+        self._local_pipeline._language = self.language
         return self._local_pipeline
 
     def cleanup(self):
