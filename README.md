@@ -8,7 +8,7 @@ I'm 17, this is my first real project, and it was built basically on my knee. Th
 
 ## What it does
 
-You speak → OutLoud gives you back:
+You speak - OutLoud gives you back:
 1. **Full transcription** — every word you said
 2. **Study notes** — a structured markdown summary (main idea, key points, takeaway)
 3. **Grammar correction** — cleans up transcription errors (cloud mode)
